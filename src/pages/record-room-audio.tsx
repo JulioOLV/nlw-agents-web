@@ -3,6 +3,7 @@
 import { useRef, useState } from 'react'
 import { Navigate, useParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
+import { RecordFeedback } from '@/components/ui/record-feedback'
 
 const isRecordingSupported =
   !!navigator.mediaDevices &&
@@ -14,6 +15,11 @@ type RoomParams = {
 }
 
 export function RecordRoomAudio() {
+  const [isSpeaking, setIsSpeaking] = useState(false)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const speakingIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const params = useParams<RoomParams>()
   const [isRecording, setIsRecording] = useState(false)
   const recorder = useRef<MediaRecorder | null>(null)
@@ -29,6 +35,19 @@ export function RecordRoomAudio() {
     if (intervalRef.current) {
       clearInterval(intervalRef.current)
     }
+
+    if (speakingIntervalRef.current) {
+      clearInterval(speakingIntervalRef.current)
+    }
+
+    if (audioContextRef.current) {
+      audioContextRef.current.close()
+      audioContextRef.current = null
+    }
+
+    analyserRef.current = null
+    sourceRef.current = null
+    setIsSpeaking(false)
   }
 
   async function uploadAudio(audio: Blob) {
@@ -90,9 +109,37 @@ export function RecordRoomAudio() {
 
     createRecorder(audio)
 
+    if (audioContextRef.current) {
+      audioContextRef.current.close()
+    }
+
+    audioContextRef.current =
+      new // biome-ignore lint/suspicious/noExplicitAny: false positive
+      (window.AudioContext || (window as any).webkitAudioContext)()
+    analyserRef.current = audioContextRef.current.createAnalyser()
+    sourceRef.current = audioContextRef.current.createMediaStreamSource(audio)
+    sourceRef.current.connect(analyserRef.current)
+    analyserRef.current.fftSize = 512
+    const bufferLength = analyserRef.current.frequencyBinCount
+    const dataArray = new Uint8Array(bufferLength)
+
+    function detectSpeech() {
+      if (!analyserRef.current) {
+        return
+      }
+      analyserRef.current.getByteTimeDomainData(dataArray)
+      let sum = 0
+      for (let i = 0; i < bufferLength; i++) {
+        const value = (dataArray[i] - 128) / 128
+        sum += value * value
+      }
+      const volume = Math.sqrt(sum / bufferLength)
+      setIsSpeaking(volume > 0.01)
+    }
+    speakingIntervalRef.current = setInterval(detectSpeech, 100)
+
     intervalRef.current = setInterval(() => {
       recorder.current?.stop()
-
       createRecorder(audio)
     }, 5000)
   }
@@ -109,7 +156,7 @@ export function RecordRoomAudio() {
         <Button onClick={startRecording}>Iniciar gravação</Button>
       )}
 
-      {isRecording ? <p>Gravando...</p> : <p>Pausado</p>}
+      <RecordFeedback isRecording={isRecording} isSpeaking={isSpeaking} />
     </div>
   )
 }
